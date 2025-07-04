@@ -10,3 +10,4 @@ node_modules
 .env.production
 config.env
 config.env.local
+config.env.development
