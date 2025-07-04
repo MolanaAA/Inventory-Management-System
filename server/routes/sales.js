@@ -1,9 +1,24 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
+const multer = require('multer');
+const csv = require('csv-parser');
+const fs = require('fs');
 const { pool } = require('../config/database');
 const { verifyToken, requireManagerOrAdmin, checkLocationAccess, logActivity } = require('../middleware/auth');
 
 const router = express.Router();
+
+// Configure multer for file uploads
+const upload = multer({ 
+  dest: 'uploads/',
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'text/csv' || file.originalname.endsWith('.csv')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only CSV files are allowed'), false);
+    }
+  }
+});
 
 // Get all sales
 router.get('/', [verifyToken, requireManagerOrAdmin], async (req, res) => {
@@ -52,9 +67,11 @@ router.get('/', [verifyToken, requireManagerOrAdmin], async (req, res) => {
     }
 
     // Get total count
-    const countQuery = query.replace(/SELECT.*FROM/, 'SELECT COUNT(*) as total FROM');
+    const countQuery = query.replace(/SELECT[\s\S]*?FROM/, 'SELECT COUNT(*) as total FROM');
     const [countResult] = await pool.execute(countQuery, queryParams);
-    const total = countResult[0].total;
+    console.log('Count Query:', countQuery);
+    console.log('Count Result:', countResult);
+    const total = countResult[0]?.total ?? 0;
 
     // Get paginated results
     query += ' ORDER BY s.sale_date DESC LIMIT ? OFFSET ?';
@@ -539,6 +556,235 @@ router.get('/analytics/summary', [verifyToken, requireManagerOrAdmin], async (re
 
   } catch (error) {
     console.error('Get sales analytics error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Bulk upload sales from CSV
+router.post('/bulk-upload', [verifyToken, requireManagerOrAdmin, upload.single('file')], async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'No file uploaded' });
+    }
+
+    const results = [];
+    const salesData = [];
+
+    // Parse CSV file
+    fs.createReadStream(req.file.path)
+      .pipe(csv())
+      .on('data', (row) => {
+        salesData.push(row);
+      })
+      .on('end', async () => {
+        try {
+          // Clean up uploaded file
+          fs.unlinkSync(req.file.path);
+
+          // Process each row
+          for (let i = 0; i < salesData.length; i++) {
+            const row = salesData[i];
+            const rowNumber = i + 2; // +2 because index starts at 0 and we skip header
+
+            try {
+              // Validate required fields
+              if (!row.product_sku || !row.location_name || !row.quantity || !row.unit_price) {
+                results.push({
+                  row: rowNumber,
+                  success: false,
+                  message: 'Missing required fields'
+                });
+                continue;
+              }
+
+              // Validate data types
+              const quantity = parseInt(row.quantity);
+              const unitPrice = parseFloat(row.unit_price);
+
+              if (isNaN(quantity) || quantity <= 0) {
+                results.push({
+                  row: rowNumber,
+                  success: false,
+                  message: 'Invalid quantity'
+                });
+                continue;
+              }
+
+              if (isNaN(unitPrice) || unitPrice < 0) {
+                results.push({
+                  row: rowNumber,
+                  success: false,
+                  message: 'Invalid unit price'
+                });
+                continue;
+              }
+
+              // Find product by SKU
+              const [products] = await pool.execute(
+                'SELECT id, name, unit_price FROM products WHERE sku = ? AND is_active = TRUE',
+                [row.product_sku]
+              );
+
+              if (products.length === 0) {
+                results.push({
+                  row: rowNumber,
+                  success: false,
+                  message: `Product with SKU "${row.product_sku}" not found`
+                });
+                continue;
+              }
+
+              const product = products[0];
+
+              // Find location by name
+              const [locations] = await pool.execute(
+                'SELECT id, name FROM locations WHERE name = ? AND is_active = TRUE',
+                [row.location_name]
+              );
+
+              if (locations.length === 0) {
+                results.push({
+                  row: rowNumber,
+                  success: false,
+                  message: `Location "${row.location_name}" not found`
+                });
+                continue;
+              }
+
+              const location = locations[0];
+
+              // Check location access for managers
+              if (req.user.role === 'manager') {
+                const [userLocations] = await pool.execute(
+                  'SELECT location_id FROM user_locations WHERE user_id = ? AND location_id = ?',
+                  [req.user.id, location.id]
+                );
+
+                if (userLocations.length === 0) {
+                  results.push({
+                    row: rowNumber,
+                    success: false,
+                    message: 'Access denied to this location'
+                  });
+                  continue;
+                }
+              }
+
+              // Check inventory availability
+              const [inventory] = await pool.execute(
+                'SELECT quantity FROM inventory WHERE product_id = ? AND location_id = ?',
+                [product.id, location.id]
+              );
+
+              if (inventory.length === 0) {
+                results.push({
+                  row: rowNumber,
+                  success: false,
+                  message: 'No inventory found for this product at this location'
+                });
+                continue;
+              }
+
+              if (inventory[0].quantity < quantity) {
+                results.push({
+                  row: rowNumber,
+                  success: false,
+                  message: 'Insufficient stock for this sale'
+                });
+                continue;
+              }
+
+              const totalAmount = quantity * unitPrice;
+
+              // Start transaction for this sale
+              const connection = await pool.getConnection();
+              await connection.beginTransaction();
+
+              try {
+                // Create sale record
+                const [saleResult] = await connection.execute(
+                  `INSERT INTO sales (product_id, location_id, quantity, unit_price, total_amount, 
+                                     customer_name, customer_email, customer_phone, created_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                  [
+                    product.id,
+                    location.id,
+                    quantity,
+                    unitPrice,
+                    totalAmount,
+                    row.customer_name || null,
+                    row.customer_email || null,
+                    row.customer_phone || null,
+                    req.user.id
+                  ]
+                );
+
+                const saleId = saleResult.insertId;
+
+                // Update inventory
+                const newQuantity = inventory[0].quantity - quantity;
+                await connection.execute(
+                  'UPDATE inventory SET quantity = ?, last_updated = CURRENT_TIMESTAMP WHERE product_id = ? AND location_id = ?',
+                  [newQuantity, product.id, location.id]
+                );
+
+                // Log stock transaction
+                await connection.execute(
+                  `INSERT INTO stock_transactions 
+                   (product_id, location_id, transaction_type, quantity, previous_quantity, new_quantity, reason, reference_number, created_by)
+                   VALUES (?, ?, 'out', ?, ?, ?, 'Bulk sale upload', ?, ?)`,
+                  [product.id, location.id, quantity, inventory[0].quantity, newQuantity, `BULK-SALE-${saleId}`, req.user.id]
+                );
+
+                await connection.commit();
+
+                results.push({
+                  row: rowNumber,
+                  success: true,
+                  message: 'Sale created successfully',
+                  saleId
+                });
+
+              } catch (error) {
+                await connection.rollback();
+                results.push({
+                  row: rowNumber,
+                  success: false,
+                  message: error.message
+                });
+              } finally {
+                connection.release();
+              }
+
+            } catch (error) {
+              results.push({
+                row: rowNumber,
+                success: false,
+                message: error.message
+              });
+            }
+          }
+
+          const successCount = results.filter(r => r.success).length;
+          const errorCount = results.length - successCount;
+
+          res.json({
+            message: `Bulk upload completed. ${successCount} successful, ${errorCount} failed.`,
+            results
+          });
+
+        } catch (error) {
+          console.error('Bulk upload error:', error);
+          res.status(500).json({ message: 'Internal server error' });
+        }
+      })
+      .on('error', (error) => {
+        console.error('CSV parsing error:', error);
+        res.status(500).json({ message: 'Error parsing CSV file' });
+      });
+
+  } catch (error) {
+    console.error('Bulk upload error:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });

@@ -22,7 +22,8 @@ const Dashboard = () => {
     lowStockItems: 0,
     recentSales: [],
     topProducts: [],
-    salesByLocation: []
+    salesByLocation: [],
+    lowStockDetails: []
   });
   const [loading, setLoading] = useState(true);
 
@@ -100,7 +101,8 @@ const Dashboard = () => {
         lowStockItems: lowStockItems.length,
         recentSales: sales.slice(0, 5),
         topProducts: analytics.topProducts || [],
-        salesByLocation: analytics.salesByLocation || []
+        salesByLocation: analytics.salesByLocation || [],
+        lowStockDetails: lowStockItems
       });
 
     } catch (error) {
@@ -201,13 +203,41 @@ const Dashboard = () => {
 
   const LowStockAlert = () => (
     <div className="bg-white rounded-lg shadow-md p-6 border border-gray-200 border-l-4 border-l-red-500">
-      <div className="flex items-center">
+      <div className="flex items-center mb-4">
         <FiAlertTriangle className="h-5 w-5 text-red-500 mr-3" />
         <div>
           <h3 className="text-lg font-semibold text-gray-900">Low Stock Alert</h3>
           <p className="text-gray-600">
             {stats.lowStockItems} product{stats.lowStockItems !== 1 ? 's' : ''} need{stats.lowStockItems !== 1 ? '' : 's'} restocking
           </p>
+        </div>
+      </div>
+      
+      {/* Low Stock Products List */}
+      <div className="mt-4">
+        <h4 className="text-sm font-medium text-gray-700 mb-3">Low Stock Products:</h4>
+        <div className="space-y-2">
+          {stats.lowStockDetails && stats.lowStockDetails.map((item, index) => (
+            <div key={index} className="flex items-center justify-between p-3 bg-red-50 rounded-lg border border-red-200">
+              <div className="flex-1">
+                <div className="flex items-center">
+                  <span className="text-sm font-medium text-gray-900">{item.product_name}</span>
+                  <span className="ml-2 text-xs text-gray-500">({item.sku})</span>
+                </div>
+                <div className="text-xs text-gray-600 mt-1">
+                  Location: {item.location_name}
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="text-sm font-medium text-red-600">
+                  {item.quantity} / {item.reorder_level}
+                </div>
+                <div className="text-xs text-gray-500">
+                  Current / Reorder Level
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -261,8 +291,7 @@ const Dashboard = () => {
         />
       </div>
 
-      {/* Low Stock Alert */}
-      {stats.lowStockItems > 0 && <LowStockAlert />}
+
 
       {/* Charts and Tables */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
