@@ -5,6 +5,152 @@ const { verifyToken, requireManagerOrAdmin, checkLocationAccess, logActivity } =
 
 const router = express.Router();
 
+
+// Create new inventory record
+router.post('/', [
+  verifyToken,
+  requireManagerOrAdmin,
+  body('productId').isInt().withMessage('Product ID is required'),
+  body('locationId').isInt().withMessage('Location ID is required'),
+  body('quantity').isInt({ min: 0 }).withMessage('Quantity must be a non-negative integer'),
+  body('transactionType').isIn(['in', 'out', 'adjustment']).withMessage('Invalid transaction type'),
+  body('reason').notEmpty().withMessage('Reason is required')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { productId, locationId, quantity, transactionType, reason, referenceNumber } = req.body;
+
+    // Check if product exists and is active
+    const [products] = await pool.execute(
+      'SELECT id, name, sku FROM products WHERE id = ? AND is_active = TRUE',
+      [productId]
+    );
+
+    if (products.length === 0) {
+      return res.status(404).json({ message: 'Product not found or inactive' });
+    }
+
+    // Check if location exists and is active
+    const [locations] = await pool.execute(
+      'SELECT id, name FROM locations WHERE id = ? AND is_active = TRUE',
+      [locationId]
+    );
+
+    if (locations.length === 0) {
+      return res.status(404).json({ message: 'Location not found or inactive' });
+    }
+
+    // Check location access for managers
+    if (req.user.role === 'manager') {
+      const [userLocations] = await pool.execute(
+        'SELECT location_id FROM user_locations WHERE user_id = ? AND location_id = ?',
+        [req.user.id, locationId]
+      );
+
+      if (userLocations.length === 0) {
+        return res.status(403).json({ message: 'Access denied to this location' });
+      }
+    }
+
+    // Check if inventory record already exists for this product and location
+    const [existingInventory] = await pool.execute(
+      'SELECT id, quantity FROM inventory WHERE product_id = ? AND location_id = ?',
+      [productId, locationId]
+    );
+
+    let inventoryId;
+    let previousQuantity = 0;
+    let newQuantity = quantity;
+
+    if (existingInventory.length > 0) {
+      // Update existing inventory
+      const currentInventory = existingInventory[0];
+      previousQuantity = currentInventory.quantity;
+      inventoryId = currentInventory.id;
+
+      // Calculate new quantity based on transaction type
+      switch (transactionType) {
+        case 'in':
+          // Add to existing stock
+          newQuantity = previousQuantity + parseInt(quantity, 10);
+          break;
+        case 'out':
+          if (quantity > previousQuantity) {
+            return res.status(400).json({ message: 'Insufficient stock' });
+          }
+          newQuantity = previousQuantity - parseInt(quantity, 10);
+          break;
+        case 'adjustment':
+          // Set quantity directly
+          newQuantity = parseInt(quantity, 10);
+          break;
+      }
+
+      // Update inventory
+      await pool.execute(
+        'UPDATE inventory SET quantity = ?, last_updated = CURRENT_TIMESTAMP WHERE id = ?',
+        [newQuantity, inventoryId]
+      );
+    } else {
+      // Create new inventory record
+      const [result] = await pool.execute(
+        'INSERT INTO inventory (product_id, location_id, quantity, created_at, last_updated) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)',
+        [productId, locationId, quantity]
+      );
+      inventoryId = result.insertId;
+      newQuantity = quantity;
+    }
+
+    // Log stock transaction
+    await pool.execute(
+      `INSERT INTO stock_transactions 
+       (product_id, location_id, transaction_type, quantity, previous_quantity, new_quantity, reason, reference_number, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        productId,
+        locationId,
+        transactionType,
+        quantity,
+        previousQuantity,
+        newQuantity,
+        reason,
+        referenceNumber || null,
+        req.user.id
+      ]
+    );
+
+    // Get the created/updated inventory record
+    const [inventory] = await pool.execute(
+      `SELECT i.*, p.name as product_name, p.sku, p.category, p.brand, l.name as location_name
+       FROM inventory i
+       INNER JOIN products p ON i.product_id = p.id
+       INNER JOIN locations l ON i.location_id = l.id
+       WHERE i.id = ?`,
+      [inventoryId]
+    );
+
+    res.status(201).json({
+      message: 'Inventory record created successfully',
+      inventory: inventory[0],
+      transaction: {
+        type: transactionType,
+        quantity,
+        previousQuantity,
+        newQuantity,
+        reason
+      }
+    });
+
+  } catch (error) {
+    console.error('Create inventory error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 // Get inventory for all locations (admin) or assigned locations (manager)
 router.get('/', [verifyToken, requireManagerOrAdmin], async (req, res) => {
   try {
