@@ -1,12 +1,15 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
+
 const multer = require('multer');
 const csv = require('csv-parser');
 const fs = require('fs');
+
 const { pool } = require('../config/database');
 const { verifyToken, requireManagerOrAdmin, checkLocationAccess, logActivity } = require('../middleware/auth');
 
 const router = express.Router();
+
 
 // Configure multer for file uploads
 const upload = multer({ 
@@ -19,6 +22,7 @@ const upload = multer({
     }
   }
 });
+
 
 // Get all sales
 router.get('/', [verifyToken, requireManagerOrAdmin], async (req, res) => {
@@ -67,11 +71,16 @@ router.get('/', [verifyToken, requireManagerOrAdmin], async (req, res) => {
     }
 
     // Get total count
+
     const countQuery = query.replace(/SELECT[\s\S]*?FROM/, 'SELECT COUNT(*) as total FROM');
     const [countResult] = await pool.execute(countQuery, queryParams);
     console.log('Count Query:', countQuery);
     console.log('Count Result:', countResult);
     const total = countResult[0]?.total ?? 0;
+    const countQuery = query.replace(/SELECT.*FROM/, 'SELECT COUNT(*) as total FROM');
+    const [countResult] = await pool.execute(countQuery, queryParams);
+    const total = countResult[0].total;
+
 
     // Get paginated results
     query += ' ORDER BY s.sale_date DESC LIMIT ? OFFSET ?';
@@ -560,6 +569,7 @@ router.get('/analytics/summary', [verifyToken, requireManagerOrAdmin], async (re
   }
 });
 
+
 // Bulk upload sales from CSV
 router.post('/bulk-upload', [verifyToken, requireManagerOrAdmin, upload.single('file')], async (req, res) => {
   try {
@@ -788,5 +798,6 @@ router.post('/bulk-upload', [verifyToken, requireManagerOrAdmin, upload.single('
     res.status(500).json({ message: 'Internal server error' });
   }
 });
+
 
 module.exports = router; 

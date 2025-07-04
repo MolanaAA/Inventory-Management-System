@@ -24,6 +24,7 @@ const Dashboard = () => {
     topProducts: [],
     salesByLocation: [],
     lowStockDetails: []
+    salesByLocation: []
   });
   const [loading, setLoading] = useState(true);
 
@@ -103,6 +104,7 @@ const Dashboard = () => {
         topProducts: analytics.topProducts || [],
         salesByLocation: analytics.salesByLocation || [],
         lowStockDetails: lowStockItems
+        salesByLocation: analytics.salesByLocation || []
       });
 
     } catch (error) {
@@ -203,7 +205,11 @@ const Dashboard = () => {
 
   const LowStockAlert = () => (
     <div className="bg-white rounded-lg shadow-md p-6 border border-gray-200 border-l-4 border-l-red-500">
+
       <div className="flex items-center mb-4">
+
+      <div className="flex items-center">
+
         <FiAlertTriangle className="h-5 w-5 text-red-500 mr-3" />
         <div>
           <h3 className="text-lg font-semibold text-gray-900">Low Stock Alert</h3>
@@ -212,6 +218,7 @@ const Dashboard = () => {
           </p>
         </div>
       </div>
+
       
       {/* Low Stock Products List */}
       <div className="mt-4">
@@ -240,6 +247,7 @@ const Dashboard = () => {
           ))}
         </div>
       </div>
+
     </div>
   );
 
@@ -291,6 +299,9 @@ const Dashboard = () => {
         />
       </div>
 
+
+      {/* Low Stock Alert */}
+      {stats.lowStockItems > 0 && <LowStockAlert />}
 
 
       {/* Charts and Tables */}
