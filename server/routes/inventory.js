@@ -5,6 +5,7 @@ const { verifyToken, requireManagerOrAdmin, checkLocationAccess, logActivity } =
 
 const router = express.Router();
 
+
 // Create new inventory record
 router.post('/', [
   verifyToken,

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+
 import { FiPlus } from 'react-icons/fi';
 import InventoryUpdateModal from './InventoryUpdateModal';
 
@@ -10,6 +11,12 @@ const Inventory = () => {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
+
+
+const Inventory = () => {
+  const [inventory, setInventory] = useState([]);
+  const [loading, setLoading] = useState(true);
+
 
   const fetchInventory = async () => {
     setLoading(true);
@@ -22,6 +29,7 @@ const Inventory = () => {
       setLoading(false);
     }
   };
+
 
   const fetchLocations = async () => {
     try {
@@ -64,7 +72,15 @@ const Inventory = () => {
           Add Inventory
         </button>
       </div>
-      
+
+  useEffect(() => {
+    fetchInventory();
+  }, []);
+
+  return (
+    <div>
+      <h1 className="text-2xl font-bold mb-6">Inventory by Product & Location</h1>
+
       <div className="bg-white rounded-lg shadow p-4">
         {loading ? (
           <div className="flex justify-center py-8">Loading...</div>
@@ -100,6 +116,7 @@ const Inventory = () => {
         )}
       </div>
 
+
       {showAddModal && (
         <InventoryUpdateModal
           item={null}
@@ -109,6 +126,7 @@ const Inventory = () => {
           onSuccess={handleAddSuccess}
         />
       )}
+
     </div>
   );
 };
